@@ -42,50 +42,46 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions web = FirebaseOptions(
     apiKey: 'AIzaSyBnwsRp5tuL5XnMh4BgOIgw7HPAMvnnRfw',
-    appId: '1:1004809312887:web:9bba64dfb30d5cf1938472',
+    appId: '1:1004809312887:web:cb9172643084ef83938472',
     messagingSenderId: '1004809312887',
     projectId: 'my-app-c9ef9',
     authDomain: 'my-app-c9ef9.firebaseapp.com',
-    databaseURL: 'https://my-app-c9ef9-default-rtdb.firebaseio.com',
     storageBucket: 'my-app-c9ef9.firebasestorage.app',
   );
 
   static const FirebaseOptions android = FirebaseOptions(
     apiKey: 'AIzaSyBLj7TZJ6JYTtfTHx4CIpwfVZd8MxjbYVU',
-    appId: '1:1004809312887:android:aac90997e60b0d43938472',
+    appId: '1:1004809312887:android:006145b123648fba938472',
     messagingSenderId: '1004809312887',
     projectId: 'my-app-c9ef9',
-    databaseURL: 'https://my-app-c9ef9-default-rtdb.firebaseio.com',
     storageBucket: 'my-app-c9ef9.firebasestorage.app',
   );
 
   static const FirebaseOptions ios = FirebaseOptions(
     apiKey: 'AIzaSyDvLrWav7ljB1GXAAGYoadI4ul1ibp9418',
-    appId: '1:1004809312887:ios:c77b2b7acecb88b4938472',
+    appId: '1:1004809312887:ios:93d35908d9b751bd938472',
     messagingSenderId: '1004809312887',
     projectId: 'my-app-c9ef9',
-    databaseURL: 'https://my-app-c9ef9-default-rtdb.firebaseio.com',
     storageBucket: 'my-app-c9ef9.firebasestorage.app',
-    iosBundleId: 'com.example.project',
+    iosBundleId: 'com.example.myApp',
   );
 
   static const FirebaseOptions macos = FirebaseOptions(
     apiKey: 'AIzaSyDvLrWav7ljB1GXAAGYoadI4ul1ibp9418',
-    appId: '1:1004809312887:ios:c77b2b7acecb88b4938472',
+    appId: '1:1004809312887:ios:93d35908d9b751bd938472',
     messagingSenderId: '1004809312887',
     projectId: 'my-app-c9ef9',
-    databaseURL: 'https://my-app-c9ef9-default-rtdb.firebaseio.com',
     storageBucket: 'my-app-c9ef9.firebasestorage.app',
-    iosBundleId: 'com.example.project',
+    iosBundleId: 'com.example.myApp',
   );
 
   static const FirebaseOptions windows = FirebaseOptions(
     apiKey: 'AIzaSyBnwsRp5tuL5XnMh4BgOIgw7HPAMvnnRfw',
-    appId: '1:1004809312887:web:b3211dbdd0a99ce1938472',
+    appId: '1:1004809312887:web:9bba64dfb30d5cf1938472',
     messagingSenderId: '1004809312887',
     projectId: 'my-app-c9ef9',
     authDomain: 'my-app-c9ef9.firebaseapp.com',
-    databaseURL: 'https://my-app-c9ef9-default-rtdb.firebaseio.com',
     storageBucket: 'my-app-c9ef9.firebasestorage.app',
   );
+
 }
