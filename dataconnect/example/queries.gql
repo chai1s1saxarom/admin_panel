@@ -1,0 +1,41 @@
+query ListAllAssetTypes @auth(level: PUBLIC, insecureReason: "This operation is safe to expose to the public as it only lists asset types, which contain no sensitive information.") {
+  assetTypes {
+    id
+    name
+    description
+  }
+}
+
+query GetAssetDetails($id: UUID!) @auth(level: USER, insecureReason: "This operation is safe to expose to all logged in users as it retrieves details of a specific asset by its ID.") {
+  asset(id: $id) {
+    id
+    name
+    description
+    url
+    createdAt
+    assetType {
+      name
+    }
+    tags_via_AssetTag {
+      name
+    }
+  }
+}
+
+mutation CreateAsset($name: String!, $assetTypeId: UUID!, $description: String, $url: String) @auth(level: USER) {
+  asset_insert(data: {
+    name: $name,
+    assetTypeId: $assetTypeId,
+    description: $description,
+    url: $url,
+    createdAt_expr: "request.time"
+  })
+}
+
+mutation AddTagToAsset($assetId: UUID!, $tagId: UUID!) @auth(level: USER) {
+  assetTag_insert(data: {
+    assetId: $assetId,
+    tagId: $tagId,
+    createdAt_expr: "request.time"
+  })
+}

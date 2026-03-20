@@ -32,7 +32,11 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
-
+**/build/
+dataconnect/
+pubspec.lock
+pubspec.lock
+.firebaserc
 # Symbolication related
 app.*.symbols
 

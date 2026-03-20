@@ -1,0 +1,25 @@
+type Asset @table {
+  name: String!
+  assetType: AssetType!
+  createdAt: Timestamp!
+  description: String
+  url: String
+}
+
+type Tag @table {
+  name: String!
+  createdAt: Timestamp!
+  description: String
+}
+
+type AssetTag @table(key: ["asset", "tag"]) {
+  asset: Asset!
+  tag: Tag!
+  createdAt: Timestamp!
+}
+
+type AssetType @table {
+  name: String!
+  createdAt: Timestamp!
+  description: String
+}

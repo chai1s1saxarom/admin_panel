@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:excel/excel.dart' as excel;
@@ -50,52 +49,23 @@ class _UsersTabState extends State<UsersTab> {
       ),
     );
   }
-
-  // Исправленный метод создания пользователя
-  Future<void> _createUserWithAuth(Map<String, dynamic> userData, String password) async {
-    // Показываем диалог загрузки
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const Center(
-        child: CircularProgressIndicator(),
-      ),
-    );
-
+      
+  Future<bool> _createUserWithAdminCredentials(
+    Map<String, dynamic> userData,
+    String password,
+    String adminEmail,
+    String adminPassword,
+  ) async {
     try {
-      // 1. Сохраняем данные текущего админа
-      User? currentAdmin = FirebaseAuth.instance.currentUser;
-      if (currentAdmin == null) {
-        Navigator.pop(context); // Закрываем диалог загрузки
-        throw Exception('Администратор не авторизован');
-      }
-
-      String adminEmail = currentAdmin.email!;
-      
-      // 2. Спрашиваем пароль админа для повторного входа
-      Navigator.pop(context); // Закрываем диалог загрузки
-      
-      String? adminPassword = await _showAdminPasswordDialog();
-      if (adminPassword == null) return;
-
-      // Снова показываем загрузку
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => const Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
-
-      // 3. Создаем нового пользователя в Authentication
-      UserCredential userCredential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
+      // 1. Создаём нового пользователя в Authentication
+      final userCredential = await FirebaseAuth.instance
+          .createUserWithEmailAndPassword(
         email: userData['email'],
         password: password,
       );
+      final uid = userCredential.user!.uid;
 
-      String uid = userCredential.user!.uid;
-
-      // 4. Сохраняем данные в Firestore
+      // 2. Сохраняем данные в Firestore
       await _usersCollection.doc(uid).set({
         'userId': uid,
         'firstName': userData['firstName'],
@@ -111,50 +81,26 @@ class _UsersTabState extends State<UsersTab> {
         'role': 'user',
       });
 
-      // 5. Выходим из аккаунта нового пользователя
+      // 3. Выходим из аккаунта нового пользователя
       await FirebaseAuth.instance.signOut();
 
-      // 6. Возвращаемся в аккаунт админа
+      // 4. Возвращаемся в аккаунт администратора
       await FirebaseAuth.instance.signInWithEmailAndPassword(
         email: adminEmail,
         password: adminPassword,
       );
 
-      // 7. Обновляем состояние AuthService (через stream это произойдет автоматически)
-      
-      Navigator.pop(context); // Закрываем диалог загрузки
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Пользователь успешно создан'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
-    } on FirebaseAuthException catch (e) {
-      Navigator.pop(context); // Закрываем диалог загрузки
-      
-      String errorMessage = 'Ошибка при создании: ';
-      if (e.code == 'email-already-in-use') {
-        errorMessage = 'Этот email уже используется';
-      } else if (e.code == 'weak-password') {
-        errorMessage = 'Слишком простой пароль';
-      } else if (e.code == 'invalid-email') {
-        errorMessage = 'Некорректный email';
-      } else {
-        errorMessage += e.message ?? 'Неизвестная ошибка';
-      }
-      
-      if (mounted) {
-        _showErrorDialog(errorMessage);
-      }
+      return true;
     } catch (e) {
-      Navigator.pop(context); // Закрываем диалог загрузки
-      
-      if (mounted) {
-        _showErrorDialog('Ошибка при создании: $e');
-      }
+      // Если произошла ошибка, пытаемся восстановить сессию администратора
+      try {
+        await FirebaseAuth.instance.signOut();
+        await FirebaseAuth.instance.signInWithEmailAndPassword(
+          email: adminEmail,
+          password: adminPassword,
+        );
+      } catch (_) {}
+      return false;
     }
   }
 
@@ -241,7 +187,6 @@ class _UsersTabState extends State<UsersTab> {
     );
   }
 
-  // Остальные методы остаются без изменений...
   Future<void> _updateUser(String userId, Map<String, dynamic> userData) async {
     try {
       await _usersCollection.doc(userId).update({
@@ -320,100 +265,121 @@ class _UsersTabState extends State<UsersTab> {
 
   Future<void> _importFromExcel() async {
     try {
+      // 1. Выбираем Excel-файл
       FilePickerResult? result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['xlsx', 'xls'],
         withData: true,
       );
+      if (result == null) return;
 
-      if (result != null) {
-        Uint8List fileBytes = result.files.single.bytes!;
-        var excelFile = excel.Excel.decodeBytes(fileBytes);
-        
-        int successCount = 0;
-        int errorCount = 0;
-        List<String> errors = [];
+      // 2. Парсим Excel
+      final Uint8List fileBytes = result.files.single.bytes!;
+      final excelFile = excel.Excel.decodeBytes(fileBytes);
+      final List<Map<String, dynamic>> usersData = [];
 
-        // Сохраняем данные админа
-        User? currentAdmin = FirebaseAuth.instance.currentUser;
-        if (currentAdmin == null) throw Exception('Администратор не авторизован');
-        
-        String adminEmail = currentAdmin.email!;
-        String? adminPassword = await _showAdminPasswordDialog();
-        if (adminPassword == null) return;
-
-        // Показываем загрузку
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => const Center(
-            child: CircularProgressIndicator(),
-          ),
-        );
-
-        for (var table in excelFile.tables.keys) {
-          var sheet = excelFile.tables[table];
-          if (sheet != null) {
-            for (int i = 1; i < sheet.rows.length; i++) {
-              var row = sheet.rows[i];
-              if (row.length >= 5) {
-                try {
-                  String tempPassword = _generateTempPassword();
-                  
-                  // Создаем пользователя
-                  UserCredential userCredential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
-                    email: row[3]?.value?.toString() ?? '',
-                    password: tempPassword,
-                  );
-
-                  String uid = userCredential.user!.uid;
-
-                  await _usersCollection.doc(uid).set({
-                    'userId': uid,
-                    'firstName': row[0]?.value?.toString() ?? '',
-                    'lastName': row[1]?.value?.toString() ?? '',
-                    'middleName': row[2]?.value?.toString() ?? '',
-                    'email': row[3]?.value?.toString() ?? '',
-                    'telephone': row[4]?.value?.toString() ?? '',
-                    'passportSeriesNumber': row.length > 5 ? row[5]?.value?.toString() : '',
-                    'passportIssuedBy': row.length > 6 ? row[6]?.value?.toString() : '',
-                    'emailVerified': false,
-                    'role': 'user',
-                    'createdAt': FieldValue.serverTimestamp(),
-                    'updatedAt': FieldValue.serverTimestamp(),
-                    'tempPassword': tempPassword,
-                  });
-
-                  // Выходим из нового пользователя
-                  await FirebaseAuth.instance.signOut();
-                  
-                  // Возвращаемся в админа
-                  await FirebaseAuth.instance.signInWithEmailAndPassword(
-                    email: adminEmail,
-                    password: adminPassword,
-                  );
-                  
-                  successCount++;
-                } catch (e) {
-                  errorCount++;
-                  errors.add('Строка ${i+1}: $e');
-                }
-              } else {
-                errorCount++;
-              }
+      for (var table in excelFile.tables.keys) {
+        final sheet = excelFile.tables[table];
+        if (sheet != null) {
+          for (int i = 1; i < sheet.rows.length; i++) {
+            final row = sheet.rows[i];
+            if (row.length >= 5) {
+              final email = row[3]?.value?.toString() ?? '';
+              if (email.isEmpty) continue;
+              usersData.add({
+                'firstName': row[0]?.value?.toString() ?? '',
+                'lastName': row[1]?.value?.toString() ?? '',
+                'middleName': row[2]?.value?.toString() ?? '',
+                'email': email,
+                'telephone': row[4]?.value?.toString() ?? '',
+                'passportSeriesNumber': row.length > 5 ? row[5]?.value?.toString() : '',
+                'passportIssuedBy': row.length > 6 ? row[6]?.value?.toString() : '',
+                'password': _generateTempPassword(),
+              });
             }
           }
         }
-
-        Navigator.pop(context); // Закрываем загрузку
-
-        if (mounted) {
-          _showImportResult(successCount, errorCount, errors);
-        }
       }
+
+      if (usersData.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Нет данных для импорта')),
+        );
+        return;
+      }
+
+      // 3. Запрашиваем пароль администратора
+      final adminUser = FirebaseAuth.instance.currentUser;
+      if (adminUser == null) {
+        throw Exception('Администратор не авторизован');
+      }
+      final adminEmail = adminUser.email!;
+      final adminPassword = await _showAdminPasswordDialog();
+      if (adminPassword == null) return;
+
+      // 4. Показываем диалог с прогрессом
+      if (!mounted) return;
+      final progressNotifier = ValueNotifier<int>(0);
+      final errorList = <String>[];
+      int successCount = 0;
+
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => WillPopScope(
+          onWillPop: () async => false,
+          child: AlertDialog(
+            title: const Text('Импорт пользователей'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(),
+                const SizedBox(height: 16),
+                ValueListenableBuilder<int>(
+                  valueListenable: progressNotifier,
+                  builder: (context, value, _) {
+                    return Text('Обработано: $value из ${usersData.length}');
+                  },
+                ),
+                const SizedBox(height: 8),
+                ValueListenableBuilder<int>(
+                  valueListenable: progressNotifier,
+                  builder: (context, value, _) {
+                    return Text('Успешно: $successCount, Ошибок: ${errorList.length}');
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      // 5. Создаём пользователей последовательно
+      for (int i = 0; i < usersData.length; i++) {
+        final user = usersData[i];
+        final password = user['password'];
+        final success = await _createUserWithAdminCredentials(
+          user,
+          password,
+          adminEmail,
+          adminPassword,
+        );
+
+        if (success) {
+          successCount++;
+        } else {
+          errorList.add('Строка ${i + 2}: ${user['email']} - ошибка создания');
+        }
+
+        progressNotifier.value = i + 1;
+      }
+
+      // 6. Закрываем диалог прогресса и показываем результат
+      if (!mounted) return;
+      Navigator.pop(context); // закрываем диалог прогресса
+      _showImportResult(successCount, errorList.length, errorList);
     } catch (e) {
       if (mounted) {
-        Navigator.pop(context); // Закрываем загрузку если была открыта
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Ошибка при импорте: $e')),
         );
@@ -421,35 +387,26 @@ class _UsersTabState extends State<UsersTab> {
     }
   }
 
-  String _generateTempPassword() {
-    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    final random = DateTime.now().millisecondsSinceEpoch;
-    String password = 'Temp';
-    for (int i = 0; i < 8; i++) {
-      password += chars[(random + i) % chars.length];
-    }
-    return password;
-  }
-
   void _showImportResult(int success, int errors, List<String> errorDetails) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Импорт завершен'),
+        title: Text('Результат импорта'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('✅ Успешно: $success'),
             Text('❌ Ошибок: $errors'),
-            if (errorDetails.isNotEmpty) ...[
-              const SizedBox(height: 10),
+            if (errors > 0) ...[
+              const SizedBox(height: 16),
               const Text('Детали ошибок:', style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 5),
+              const SizedBox(height: 8),
               Container(
-                height: 200,
+                constraints: BoxConstraints(maxHeight: 200),
                 width: double.maxFinite,
                 child: ListView.builder(
+                  shrinkWrap: true,
                   itemCount: errorDetails.length,
                   itemBuilder: (context, index) => Text(
                     errorDetails[index],
@@ -468,6 +425,79 @@ class _UsersTabState extends State<UsersTab> {
         ],
       ),
     );
+  }
+
+  Future<void> _createUserWithAuth(Map<String, dynamic> userData, String password) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(child: CircularProgressIndicator()),
+    );
+
+    try {
+      final currentAdmin = FirebaseAuth.instance.currentUser;
+      if (currentAdmin == null) {
+        Navigator.pop(context);
+        throw Exception('Администратор не авторизован');
+      }
+      final adminEmail = currentAdmin.email!;
+      Navigator.pop(context); // закрываем диалог загрузки
+
+      final adminPassword = await _showAdminPasswordDialog();
+      if (adminPassword == null) return;
+
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const Center(child: CircularProgressIndicator()),
+      );
+
+      final success = await _createUserWithAdminCredentials(
+        userData,
+        password,
+        adminEmail,
+        adminPassword,
+      );
+
+      Navigator.pop(context); // закрываем диалог загрузки
+
+      if (mounted && success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Пользователь успешно создан'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else if (mounted) {
+        _showErrorDialog('Не удалось создать пользователя');
+      }
+    } on FirebaseAuthException catch (e) {
+      Navigator.pop(context);
+      String errorMessage = 'Ошибка при создании: ';
+      if (e.code == 'email-already-in-use') {
+        errorMessage = 'Этот email уже используется';
+      } else if (e.code == 'weak-password') {
+        errorMessage = 'Слишком простой пароль';
+      } else if (e.code == 'invalid-email') {
+        errorMessage = 'Некорректный email';
+      } else {
+        errorMessage += e.message ?? 'Неизвестная ошибка';
+      }
+      if (mounted) _showErrorDialog(errorMessage);
+    } catch (e) {
+      Navigator.pop(context);
+      if (mounted) _showErrorDialog('Ошибка при создании: $e');
+    }
+  }
+
+  String _generateTempPassword() {
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    final random = DateTime.now().millisecondsSinceEpoch;
+    String password = 'Temp';
+    for (int i = 0; i < 8; i++) {
+      password += chars[(random + i) % chars.length];
+    }
+    return password;
   }
 
   void _showImportHelp() {

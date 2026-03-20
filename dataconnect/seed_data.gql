@@ -1,0 +1,73 @@
+mutation CreateDemoData @transaction @auth(level: USER, insecureReason: "This is a seed mutation and doesn't expose sensitive information.") {
+  assetType_insertMany(data: [
+    {
+      id: "6e2e5052-a5e2-43e9-a5c9-95292a40e111",
+      name: "Image",
+      description: "A digital image file",
+      createdAt: "2023-01-15T10:00:00Z"
+    },
+    {
+      id: "6e2e5052-a5e2-43e9-a5c9-95292a40e222",
+      name: "Video",
+      description: "A digital video file",
+      createdAt: "2023-01-15T10:05:00Z"
+    }
+  ])
+  tag_insertMany(data: [
+    {
+      id: "6e2e5052-a5e2-43e9-a5c9-95292a40e333",
+      name: "Nature",
+      description: "Assets related to nature",
+      createdAt: "2023-01-15T10:10:00Z"
+    },
+    {
+      id: "6e2e5052-a5e2-43e9-a5c9-95292a40e444",
+      name: "Urban",
+      description: "Assets related to urban environments",
+      createdAt: "2023-01-15T10:15:00Z"
+    }
+  ])
+  asset_insertMany(data: [
+    {
+      id: "6e2e5052-a5e2-43e9-a5c9-95292a40e555",
+      name: "Mountain Sunset",
+      assetTypeId: "6e2e5052-a5e2-43e9-a5c9-95292a40e111",
+      description: "A beautiful sunset over the mountains",
+      url: "https://example.com/mountain_sunset.jpg",
+      createdAt: "2023-01-15T10:20:00Z"
+    },
+    {
+      id: "6e2e5052-a5e2-43e9-a5c9-95292a40e666",
+      name: "City Lights",
+      assetTypeId: "6e2e5052-a5e2-43e9-a5c9-95292a40e111",
+      description: "Night view of a city skyline",
+      url: "https://example.com/city_lights.jpg",
+      createdAt: "2023-01-15T10:25:00Z"
+    },
+    {
+      id: "6e2e5052-a5e2-43e9-a5c9-95292a40e777",
+      name: "Forest Walk",
+      assetTypeId: "6e2e5052-a5e2-43e9-a5c9-95292a40e222",
+      description: "Video of a peaceful walk through a forest",
+      url: "https://example.com/forest_walk.mp4",
+      createdAt: "2023-01-15T10:30:00Z"
+    }
+  ])
+  assetTag_insertMany(data: [
+    {
+      assetId: "6e2e5052-a5e2-43e9-a5c9-95292a40e555",
+      tagId: "6e2e5052-a5e2-43e9-a5c9-95292a40e333",
+      createdAt: "2023-01-15T10:35:00Z"
+    },
+    {
+      assetId: "6e2e5052-a5e2-43e9-a5c9-95292a40e666",
+      tagId: "6e2e5052-a5e2-43e9-a5c9-95292a40e444",
+      createdAt: "2023-01-15T10:40:00Z"
+    },
+    {
+      assetId: "6e2e5052-a5e2-43e9-a5c9-95292a40e777",
+      tagId: "6e2e5052-a5e2-43e9-a5c9-95292a40e333",
+      createdAt: "2023-01-15T10:45:00Z"
+    }
+  ])
+}
