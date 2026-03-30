@@ -6,15 +6,20 @@ import 'home_screen.dart';
 import 'login_screen.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'firebase_options.dart';
-
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  
+  if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.windows || defaultTargetPlatform == TargetPlatform.linux)) {
+    final token = RootIsolateToken.instance!;
+    BackgroundIsolateBinaryMessenger.ensureInitialized(token);
+  }
+  
   runApp(MyApp());
 }
-
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -29,6 +34,7 @@ class MyApp extends StatelessWidget {
         ),
         home: AuthWrapper(),
         debugShowCheckedModeBanner: false,
+        navigatorKey: navigatorKey,
       ),
     );
   }

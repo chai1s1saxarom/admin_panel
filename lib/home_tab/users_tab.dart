@@ -6,6 +6,7 @@ import 'package:excel/excel.dart' as excel;
 import 'dart:typed_data';
 import '../auth_service.dart'; // Импортируем ваш AuthService
 import 'package:provider/provider.dart';
+import 'package:flutter/foundation.dart';
 
 class UsersTab extends StatefulWidget {
   const UsersTab({Key? key}) : super(key: key);
@@ -17,9 +18,7 @@ class UsersTab extends StatefulWidget {
 class _UsersTabState extends State<UsersTab> {
   final CollectionReference _usersCollection = 
       FirebaseFirestore.instance.collection('users');
-  
-  // Получаем AuthService через Provider
-  AuthService get _authService => Provider.of<AuthService>(context, listen: false);
+
 
   void _showUserDetails(Map<String, dynamic> userData, String userId) {
     showModalBottomSheet(
@@ -240,7 +239,19 @@ class _UsersTabState extends State<UsersTab> {
 
       if (confirm != true) return;
 
-      // Удаляем из Firestore
+      // 1. Удаляем userId из поля assignedUsers во всех категориях
+      final categoriesSnapshot = await FirebaseFirestore.instance
+          .collection('categories')
+          .where('assignedUsers', arrayContains: userId)
+          .get();
+      for (var doc in categoriesSnapshot.docs) {
+        await doc.reference.update({
+          'assignedUsers': FieldValue.arrayRemove([userId]),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      }
+
+      // 2. Удаляем документ пользователя из Firestore
       await _usersCollection.doc(userId).delete();
       
       if (mounted) {
@@ -265,7 +276,7 @@ class _UsersTabState extends State<UsersTab> {
 
   Future<void> _importFromExcel() async {
     try {
-      // 1. Выбираем Excel-файл
+      // 1. Pick file
       FilePickerResult? result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['xlsx', 'xls'],
@@ -273,42 +284,20 @@ class _UsersTabState extends State<UsersTab> {
       );
       if (result == null) return;
 
-      // 2. Парсим Excel
+      // 2. Parse Excel in isolate
       final Uint8List fileBytes = result.files.single.bytes!;
-      final excelFile = excel.Excel.decodeBytes(fileBytes);
-      final List<Map<String, dynamic>> usersData = [];
-
-      for (var table in excelFile.tables.keys) {
-        final sheet = excelFile.tables[table];
-        if (sheet != null) {
-          for (int i = 1; i < sheet.rows.length; i++) {
-            final row = sheet.rows[i];
-            if (row.length >= 5) {
-              final email = row[3]?.value?.toString() ?? '';
-              if (email.isEmpty) continue;
-              usersData.add({
-                'firstName': row[0]?.value?.toString() ?? '',
-                'lastName': row[1]?.value?.toString() ?? '',
-                'middleName': row[2]?.value?.toString() ?? '',
-                'email': email,
-                'telephone': row[4]?.value?.toString() ?? '',
-                'passportSeriesNumber': row.length > 5 ? row[5]?.value?.toString() : '',
-                'passportIssuedBy': row.length > 6 ? row[6]?.value?.toString() : '',
-                'password': _generateTempPassword(),
-              });
-            }
-          }
-        }
-      }
+      final List<Map<String, dynamic>> usersData = await compute(_parseExcel, fileBytes);
 
       if (usersData.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Нет данных для импорта')),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Нет данных для импорта')),
+          );
+        }
         return;
       }
 
-      // 3. Запрашиваем пароль администратора
+      // 3. Request admin password
       final adminUser = FirebaseAuth.instance.currentUser;
       if (adminUser == null) {
         throw Exception('Администратор не авторизован');
@@ -317,44 +306,10 @@ class _UsersTabState extends State<UsersTab> {
       final adminPassword = await _showAdminPasswordDialog();
       if (adminPassword == null) return;
 
-      // 4. Показываем диалог с прогрессом
-      if (!mounted) return;
-      final progressNotifier = ValueNotifier<int>(0);
+      // 4. Create users sequentially (no progress dialog)
       final errorList = <String>[];
       int successCount = 0;
 
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => WillPopScope(
-          onWillPop: () async => false,
-          child: AlertDialog(
-            title: const Text('Импорт пользователей'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const CircularProgressIndicator(),
-                const SizedBox(height: 16),
-                ValueListenableBuilder<int>(
-                  valueListenable: progressNotifier,
-                  builder: (context, value, _) {
-                    return Text('Обработано: $value из ${usersData.length}');
-                  },
-                ),
-                const SizedBox(height: 8),
-                ValueListenableBuilder<int>(
-                  valueListenable: progressNotifier,
-                  builder: (context, value, _) {
-                    return Text('Успешно: $successCount, Ошибок: ${errorList.length}');
-                  },
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-
-      // 5. Создаём пользователей последовательно
       for (int i = 0; i < usersData.length; i++) {
         final user = usersData[i];
         final password = user['password'];
@@ -370,14 +325,14 @@ class _UsersTabState extends State<UsersTab> {
         } else {
           errorList.add('Строка ${i + 2}: ${user['email']} - ошибка создания');
         }
-
-        progressNotifier.value = i + 1;
       }
 
-      // 6. Закрываем диалог прогресса и показываем результат
-      if (!mounted) return;
-      Navigator.pop(context); // закрываем диалог прогресса
-      _showImportResult(successCount, errorList.length, errorList);
+      // 5. Show result
+      if (mounted) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _showImportResult(successCount, errorList.length, errorList);
+        });
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -437,20 +392,23 @@ class _UsersTabState extends State<UsersTab> {
     try {
       final currentAdmin = FirebaseAuth.instance.currentUser;
       if (currentAdmin == null) {
-        Navigator.pop(context);
+        if (mounted) Navigator.pop(context); // закрываем диалог
         throw Exception('Администратор не авторизован');
       }
       final adminEmail = currentAdmin.email!;
-      Navigator.pop(context); // закрываем диалог загрузки
+      if (mounted) Navigator.pop(context); // закрываем диалог загрузки
 
       final adminPassword = await _showAdminPasswordDialog();
       if (adminPassword == null) return;
 
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => const Center(child: CircularProgressIndicator()),
-      );
+      // Показываем загрузку
+      if (mounted) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => const Center(child: CircularProgressIndicator()),
+        );
+      }
 
       final success = await _createUserWithAdminCredentials(
         userData,
@@ -459,7 +417,7 @@ class _UsersTabState extends State<UsersTab> {
         adminPassword,
       );
 
-      Navigator.pop(context); // закрываем диалог загрузки
+      if (mounted) Navigator.pop(context); // закрываем диалог загрузки
 
       if (mounted && success) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -472,7 +430,7 @@ class _UsersTabState extends State<UsersTab> {
         _showErrorDialog('Не удалось создать пользователя');
       }
     } on FirebaseAuthException catch (e) {
-      Navigator.pop(context);
+      if (mounted) Navigator.pop(context);
       String errorMessage = 'Ошибка при создании: ';
       if (e.code == 'email-already-in-use') {
         errorMessage = 'Этот email уже используется';
@@ -485,7 +443,7 @@ class _UsersTabState extends State<UsersTab> {
       }
       if (mounted) _showErrorDialog(errorMessage);
     } catch (e) {
-      Navigator.pop(context);
+      if (mounted) Navigator.pop(context);
       if (mounted) _showErrorDialog('Ошибка при создании: $e');
     }
   }
@@ -1054,6 +1012,185 @@ class _UserDetailsSheetState extends State<UserDetailsSheet> {
     _emailController = TextEditingController(text: widget.userData['email'] ?? '');
   }
 
+  void _showAddCategoryDialog() async {
+    try {
+      // Загружаем все доступные категории
+      final categoriesSnapshot = await FirebaseFirestore.instance.collection('categories').get();
+      final allCategories = categoriesSnapshot.docs;
+
+      if (allCategories.isEmpty) {
+        if (!mounted) return;
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Нет категорий'),
+            content: const Text('Сначала создайте категории в разделе "Категории продуктов".'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('OK'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Перейдите на вкладку "Категории" для создания')),
+                  );
+                },
+                child: const Text('Перейти'),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+
+      // Фильтруем категории, в которые пользователь ещё не добавлен
+      final availableCategories = allCategories.where((doc) {
+        final data = doc.data() as Map<String, dynamic>;
+        final assignedUsers = List<String>.from(data['assignedUsers'] ?? []);
+        return !assignedUsers.contains(widget.userId);
+      }).toList();
+
+      if (availableCategories.isEmpty) {
+        if (!mounted) return;
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Нет доступных категорий'),
+            content: const Text('Пользователь уже добавлен во все категории.'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+
+      String? selectedCategoryId;
+      Map<String, dynamic>? selectedCategoryData;
+
+      await showDialog(
+        context: context,
+        builder: (context) => StatefulBuilder(
+          builder: (context, setState) => AlertDialog(
+            title: const Text('Выберите категорию'),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: availableCategories.length,
+                itemBuilder: (context, index) {
+                  final doc = availableCategories[index];
+                  final data = doc.data() as Map<String, dynamic>;
+                  final name = data['name'] ?? '';
+                  final priceCategory = data['priceCategory'] ?? '';
+                  final size = data['size'] ?? '';
+                  return RadioListTile<String>(
+                    title: Text(name),
+                    subtitle: Text('$priceCategory, ${size} м'),
+                    value: doc.id,
+                    groupValue: selectedCategoryId,
+                    onChanged: (value) {
+                      setState(() {
+                        selectedCategoryId = value;
+                        selectedCategoryData = data;
+                      });
+                    },
+                  );
+                },
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Отмена'),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  if (selectedCategoryId == null || selectedCategoryData == null) return;
+                  try {
+                    // Добавляем userId в массив assignedUsers категории
+                    final categoryRef = FirebaseFirestore.instance
+                        .collection('categories')
+                        .doc(selectedCategoryId);
+                    await categoryRef.update({
+                      'assignedUsers': FieldValue.arrayUnion([widget.userId]),
+                      'updatedAt': FieldValue.serverTimestamp(),
+                    });
+                    if (mounted) Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Категория добавлена')),
+                    );
+                  } catch (e) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Ошибка: $e')),
+                      );
+                    }
+                  }
+                },
+                child: const Text('Добавить'),
+              ),
+            ],
+          ),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка загрузки категорий: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _removeCategoryFromUser(String categoryId) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Удалить категорию?'),
+        content: const Text('Пользователь будет исключён из этой категории.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Отмена'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true) {
+      try {
+        await FirebaseFirestore.instance
+            .collection('categories')
+            .doc(categoryId)
+            .update({
+          'assignedUsers': FieldValue.arrayRemove([widget.userId]),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Категория удалена')),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Ошибка: $e')),
+          );
+        }
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return DraggableScrollableSheet(
@@ -1061,57 +1198,40 @@ class _UserDetailsSheetState extends State<UserDetailsSheet> {
       minChildSize: 0.5,
       maxChildSize: 0.95,
       builder: (context, scrollController) {
-        return Container(
-          padding: const EdgeInsets.all(20),
-          decoration: const BoxDecoration(
-            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-            color: Colors.white,
-          ),
-          child: Column(
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    'Информация о пользователе',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  Row(
-                    children: [
-                      IconButton(
-                        icon: Icon(_isEditing ? Icons.close : Icons.edit),
-                        onPressed: () {
-                          setState(() {
-                            _isEditing = !_isEditing;
-                            if (!_isEditing) {
-                              _initializeControllers(); // Сброс изменений
-                            }
-                          });
-                        },
-                      ),
-                      if (_isEditing)
-                        IconButton(
-                          icon: const Icon(Icons.save),
-                          onPressed: _saveChanges,
-                        ),
-                      IconButton(
-                        icon: const Icon(Icons.delete, color: Colors.red),
-                        onPressed: _confirmDelete,
-                      ),
-                    ],
-                  ),
-                ],
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('Информация о пользователе'),
+            actions: [
+              IconButton(
+                icon: Icon(_isEditing ? Icons.close : Icons.edit),
+                onPressed: () {
+                  setState(() {
+                    _isEditing = !_isEditing;
+                    if (!_isEditing) {
+                      _initializeControllers();
+                    }
+                  });
+                },
               ),
-              const SizedBox(height: 20),
-              Expanded(
-                child: _isEditing
-                    ? _buildEditForm(scrollController)
-                    : _buildInfoDisplay(scrollController),
+              if (_isEditing)
+                IconButton(
+                  icon: const Icon(Icons.save),
+                  onPressed: _saveChanges,
+                ),
+              IconButton(
+                icon: const Icon(Icons.delete, color: Colors.red),
+                onPressed: _confirmDelete,
               ),
             ],
+          ),
+          body: Padding(
+            padding: const EdgeInsets.all(16),
+            child: _isEditing ? _buildEditForm(scrollController) : _buildInfoDisplay(scrollController),
+          ),
+          floatingActionButton: FloatingActionButton(
+            onPressed: _showAddCategoryDialog,
+            child: const Icon(Icons.add),
+            tooltip: 'Добавить категорию',
           ),
         );
       },
@@ -1122,78 +1242,120 @@ class _UserDetailsSheetState extends State<UserDetailsSheet> {
     return ListView(
       controller: scrollController,
       children: [
-        Center(
-          child: CircleAvatar(
-            radius: 50,
-            backgroundColor: Colors.blue,
-            child: Text(
-              _getInitials(),
-              style: const TextStyle(
-                fontSize: 24,
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 16),
-        Center(
-          child: Text(
-            _getFullName(),
-            style: const TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
-        if (widget.userData['role'] != null)
-          Center(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              decoration: BoxDecoration(
-                color: widget.userData['role'] == 'admin' 
-                    ? Colors.purple[50] 
-                    : Colors.blue[50],
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Text(
-                widget.userData['role'] == 'admin' ? 'Администратор' : 'Пользователь',
-                style: TextStyle(
-                  color: widget.userData['role'] == 'admin' 
-                      ? Colors.purple[800] 
-                      : Colors.blue[800],
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ),
-          ),
-        const SizedBox(height: 20),
-        _buildInfoTile(Icons.email, 'Email', widget.userData['email']),
+        // ФИО
+        _buildInfoTile(Icons.person, 'ФИО', _getFullName()),
+        // Email
+        _buildInfoTile(Icons.email, 'Email', widget.userData['email'] ?? 'Не указан'),
+        // Телефон
         _buildInfoTile(Icons.phone, 'Телефон', widget.userData['telephone'] ?? 'Не указан'),
-        _buildInfoTile(Icons.credit_card, 'Паспорт', 
-            widget.userData['passportSeriesNumber'] ?? 'Не указан'),
-        _buildInfoTile(Icons.location_city, 'Кем выдан', 
-            widget.userData['passportIssuedBy'] ?? 'Не указан'),
-        if (widget.userData['emailVerified'] != null)
-          _buildInfoTile(
-            Icons.verified_user,
-            'Email подтвержден',
-            widget.userData['emailVerified'] ? 'Да' : 'Нет',
-          ),
+        // Паспорт
+        if ((widget.userData['passportSeriesNumber'] ?? '').isNotEmpty)
+          _buildInfoTile(Icons.credit_card, 'Паспорт', widget.userData['passportSeriesNumber']),
+        // Кем выдан
+        if ((widget.userData['passportIssuedBy'] ?? '').isNotEmpty)
+          _buildInfoTile(Icons.location_city, 'Выдан', widget.userData['passportIssuedBy']),
+        // Дата создания
         if (widget.userData['createdAt'] != null)
-          _buildInfoTile(
-            Icons.calendar_today,
-            'Дата регистрации',
-            _formatDate(widget.userData['createdAt']),
-          ),
+          _buildInfoTile(Icons.calendar_today, 'Создан', _formatDate(widget.userData['createdAt'])),
+        // Дата обновления
         if (widget.userData['updatedAt'] != null)
-          _buildInfoTile(
-            Icons.update,
-            'Последнее обновление',
-            _formatDate(widget.userData['updatedAt']),
-          ),
+          _buildInfoTile(Icons.update, 'Обновлен', _formatDate(widget.userData['updatedAt'])),
+
+        const Divider(height: 32),
+        const Text('Категории', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        StreamBuilder<QuerySnapshot>(
+          stream: FirebaseFirestore.instance
+              .collection('categories')
+              .where('assignedUsers', arrayContains: widget.userId)
+              .orderBy('createdAt', descending: true)
+              .snapshots(),
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return Text('Ошибка: ${snapshot.error}');
+            }
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            final categories = snapshot.data!.docs;
+            if (categories.isEmpty) {
+              return const Padding(
+                padding: EdgeInsets.symmetric(vertical: 16),
+                child: Text('Нет категорий', style: TextStyle(color: Colors.grey)),
+              );
+            }
+            return ListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: categories.length,
+              itemBuilder: (context, index) {
+                final doc = categories[index];
+                final data = doc.data() as Map<String, dynamic>;
+                return Card(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  child: ListTile(
+                    title: Text(data['name'] ?? ''),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Ценовая категория: ${data['priceCategory'] ?? ''}'),
+                        Text('Размер: ${data['preferredSize'] ?? data['size'] ?? ''} м'),
+                        if (data['comment'] != null && data['comment'].isNotEmpty)
+                          Text('Комментарий: ${data['comment']}'),
+                      ],
+                    ),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete, size: 20, color: Colors.red),
+                      onPressed: () => _removeCategoryFromUser(doc.id),
+                    ),
+                  ),
+                );
+              },
+            );
+          },
+        ),
       ],
+    );
+  }
+
+  Widget _buildInfoTile(IconData icon, String label, String value) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey[200]!),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 20, color: Colors.grey[600]),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[600],
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -1264,46 +1426,7 @@ class _UserDetailsSheetState extends State<UserDetailsSheet> {
     );
   }
 
-  Widget _buildInfoTile(IconData icon, String label, String value) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.grey[50],
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey[200]!),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, size: 20, color: Colors.grey[600]),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.grey[600],
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  value,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+
 
   Future<void> _saveChanges() async {
     final updatedData = {
@@ -1362,21 +1485,6 @@ class _UserDetailsSheetState extends State<UserDetailsSheet> {
     return fullName;
   }
 
-  String _getInitials() {
-    final firstName = widget.userData['firstName'] ?? '';
-    final lastName = widget.userData['lastName'] ?? '';
-    final middleName = widget.userData['middleName'] ?? '';
-    
-    if (firstName.isEmpty && lastName.isEmpty) return '?';
-    
-    String initials = '';
-    if (lastName.isNotEmpty) initials += lastName[0];
-    if (firstName.isNotEmpty) initials += firstName[0];
-    if (middleName.isNotEmpty) initials += middleName[0];
-    
-    return initials.toUpperCase();
-  }
-
   String _formatDate(dynamic timestamp) {
     if (timestamp == null) return 'Неизвестно';
     if (timestamp is Timestamp) {
@@ -1397,4 +1505,45 @@ class _UserDetailsSheetState extends State<UserDetailsSheet> {
     _emailController.dispose();
     super.dispose();
   }
+}
+
+
+// Глобальные функции для импорта Excel (выносятся из класса)
+String _generateTempPasswordStatic() {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  final random = DateTime.now().millisecondsSinceEpoch;
+  String password = 'Temp';
+  for (int i = 0; i < 8; i++) {
+    password += chars[(random + i) % chars.length];
+  }
+  return password;
+}
+
+List<Map<String, dynamic>> _parseExcel(Uint8List fileBytes) {
+  final excelFile = excel.Excel.decodeBytes(fileBytes);
+  final users = <Map<String, dynamic>>[];
+  
+  for (var table in excelFile.tables.keys) {
+    final sheet = excelFile.tables[table];
+    if (sheet != null) {
+      for (int i = 1; i < sheet.rows.length; i++) {
+        final row = sheet.rows[i];
+        if (row.length >= 5) {
+          final email = row[3]?.value?.toString() ?? '';
+          if (email.isEmpty) continue;
+          users.add({
+            'firstName': row[0]?.value?.toString() ?? '',
+            'lastName': row[1]?.value?.toString() ?? '',
+            'middleName': row[2]?.value?.toString() ?? '',
+            'email': email,
+            'telephone': row[4]?.value?.toString() ?? '',
+            'passportSeriesNumber': row.length > 5 ? row[5]?.value?.toString() : '',
+            'passportIssuedBy': row.length > 6 ? row[6]?.value?.toString() : '',
+            'password': _generateTempPasswordStatic(),
+          });
+        }
+      }
+    }
+  }
+  return users;
 }

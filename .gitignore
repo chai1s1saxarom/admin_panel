@@ -37,6 +37,7 @@ dataconnect/
 pubspec.lock
 pubspec.lock
 .firebaserc
+devtools_options.yaml
 # Symbolication related
 app.*.symbols
 
